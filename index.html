@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Transparent Physical Cloth</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23050607'/%3E%3Cpath d='M13 18c11-7 27 6 38-1v29c-11 7-27-6-38 1z' fill='none' stroke='%23e9fffb' stroke-width='4' stroke-linejoin='round'/%3E%3Cpath d='M18 25c10 3 19 2 30-2M17 36c12 6 22 3 31-1' stroke='%237affdc' stroke-width='3' stroke-linecap='round' opacity='.8'/%3E%3C/svg%3E">
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      background: #050607;
+      color: rgba(255,255,255,0.9);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    canvas { display: block; touch-action: none; }
+    button, input { font: inherit; }
+
+    .start {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(4,5,6,0.94);
+    }
+    .start.hidden { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 180ms ease, visibility 180ms ease; }
+    .start-card {
+      width: min(420px, calc(100vw - 36px));
+      padding: 22px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 8px;
+      background: rgba(16,18,20,0.86);
+      text-align: center;
+      box-shadow: 0 24px 70px rgba(0,0,0,0.38);
+      backdrop-filter: blur(18px);
+    }
+    .start-card h1 { margin: 0 0 10px; font-size: 24px; line-height: 1.15; letter-spacing: 0; }
+    .start-card p { margin: 0 0 18px; color: rgba(255,255,255,0.64); font-size: 14px; line-height: 1.55; }
+    .loading-text {
+      min-height: 18px;
+      margin: -6px 0 14px;
+      color: rgba(122,255,220,0.86);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .loading-text.error { color: rgba(255,130,130,0.9); }
+    .primary {
+      width: 100%;
+      height: 46px;
+      border: 1px solid rgba(255,255,255,0.36);
+      border-radius: 8px;
+      color: #071012;
+      background: #eef8f7;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .hud {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: min(300px, calc(100vw - 28px));
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 8px;
+      background: rgba(8,10,12,0.62);
+      backdrop-filter: blur(16px);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 32px;
+      color: rgba(255,255,255,0.66);
+      font-size: 13px;
+    }
+    .file { width: 100%; min-width: 0; color: rgba(255,255,255,0.62); font-size: 12px; }
+    .slider { width: 118px; accent-color: #e8f7f2; }
+    .icon-btn {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 32px;
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.88);
+      background: rgba(255,255,255,0.06);
+      cursor: pointer;
+    }
+    .icon-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+    .debug-toggle {
+      position: fixed;
+      right: 14px;
+      top: 14px;
+      z-index: 22;
+    }
+    .debug {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      z-index: 30;
+      width: min(380px, calc(100vw - 24px));
+      padding: 10px 12px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 8px;
+      color: rgba(255,255,255,0.9);
+      background: rgba(0,0,0,0.68);
+      backdrop-filter: blur(14px);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      pointer-events: none;
+      display: none;
+    }
+    .debug.visible { display: block; }
+
+    @media (max-width: 720px) {
+      .hud { right: 10px; bottom: 10px; width: calc(100vw - 20px); }
+      .debug-toggle { right: 10px; top: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="startOverlay" class="start">
+    <div class="start-card">
+      <h1>Transparent Physical Cloth</h1>
+      <p>Start the camera, upload media, then pinch and lift the camouflaged cloth.</p>
+      <div id="loadingText" class="loading-text"></div>
+      <button id="startBtn" class="primary">Start</button>
+    </div>
+  </div>
+
+  <button id="debugBtn" class="icon-btn debug-toggle" title="Toggle debug" aria-label="Toggle debug">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3v3"></path><path d="M12 18v3"></path><path d="M3 12h3"></path><path d="M18 12h3"></path>
+      <circle cx="12" cy="12" r="5"></circle>
+    </svg>
+  </button>
+  <div id="debug" class="debug"></div>
+
+  <div class="hud">
+    <div class="row">
+      <span>Upload media</span>
+      <input id="mediaInput" class="file" type="file" accept="image/*,video/*">
+    </div>
+    <div class="row">
+      <span>Mirror camera</span>
+      <button id="mirrorBtn" class="icon-btn" title="Mirror camera" aria-label="Mirror camera">
+        <svg viewBox="0 0 24 24"><path d="M8 7h8a4 4 0 0 1 0 8H7"></path><path d="M10 11 6 15l4 4"></path></svg>
+      </button>
+    </div>
+    <div class="row">
+      <span>Cloth scale</span>
+      <input id="scaleSlider" class="slider" type="range" min="0.62" max="1.18" step="0.01" value="1">
+    </div>
+  </div>
+
+  <script>
+    const COLS = 38;
+    const ROWS = 35;
+    const FRICTION = 0.94;
+    const GRAVITY = 0.08;
+    const ITERATIONS = 12;
+    const STIFFNESS = 0.4;
+    const PINCH_DOWN = 0.05;
+    const PINCH_UP = 0.08;
+    const HAND_MATCH_RADIUS = 200;
+    const GRAB_RADIUS = 150;
+    const GRAB_SMOOTHING = 0.34;
+    const GRAB_PATCH_RADIUS = 125;
+
+    let video = null;
+    let stream = null;
+    let hands = null;
+    let handsBusy = false;
+    let started = false;
+    let mirror = true;
+    let debugVisible = false;
+    let cameraStatus = "idle";
+    let cameraError = "";
+    let handsStatus = "idle";
+    let handsError = "";
+
+    let mediaEl = null;
+    let mediaKind = null;
+    let mediaUrl = null;
+    let scaleValue = 1;
+
+    let cloth = [];
+    let sticks = [];
+    let clothBox = { x: 0, y: 0, w: 0, h: 0 };
+    let restStepX = 1;
+    let restStepY = 1;
+    let restArea = 1;
+    let restoreMode = "fall";
+    let restoreForce = 0.0011;
+    let clothActivity = 0;
+    let shock = 0;
+    let stressView = false;
+
+    let handsState = [];
+    let prevHandsState = [];
+    let lastHandsAt = 0;
+    let pointers = new Map();
+    let grabs = new Map();
+
+    let fpsSmooth = 60;
+    let lastFrameMs = performance.now();
+
+    const startOverlay = document.getElementById("startOverlay");
+    const startBtn = document.getElementById("startBtn");
+    const loadingText = document.getElementById("loadingText");
+    const mediaInput = document.getElementById("mediaInput");
+    const mirrorBtn = document.getElementById("mirrorBtn");
+    const scaleSlider = document.getElementById("scaleSlider");
+    const debugBtn = document.getElementById("debugBtn");
+    const debugEl = document.getElementById("debug");
+
+    function setup() {
+      createCanvas(windowWidth, windowHeight);
+      pixelDensity(1);
+      noiseDetail(4, 0.48);
+      buildCloth();
+      bindUi();
+    }
+
+    function draw() {
+      const now = performance.now();
+      fpsSmooth = lerp(fpsSmooth, 1000 / Math.max(1, now - lastFrameMs), 0.08);
+      lastFrameMs = now;
+
+      background(5, 6, 7);
+      updateHandsPipeline();
+      updatePhysics();
+
+      drawCameraBackground();
+      drawHiddenMedia();
+      drawCameraOnCloth();
+      drawMaterialResponse();
+      drawProximityField();
+      updateDebug();
+    }
+
+    function bindUi() {
+      startBtn.addEventListener("click", startExperience);
+      mediaInput.addEventListener("change", handleMediaUpload);
+      mirrorBtn.addEventListener("click", () => { mirror = !mirror; });
+      scaleSlider.addEventListener("input", () => {
+        scaleValue = Number(scaleSlider.value);
+        buildCloth();
+      });
+      debugBtn.addEventListener("click", () => {
+        debugVisible = !debugVisible;
+        debugEl.classList.toggle("visible", debugVisible);
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() === "s") stressView = !stressView;
+      });
+      document.addEventListener("gesturestart", (event) => event.preventDefault());
+      document.addEventListener("touchmove", (event) => event.preventDefault(), { passive: false });
+    }
+
+    async function startExperience() {
+      if (started) return;
+      started = true;
+      startBtn.disabled = true;
+      setLoading("Requesting camera permission...");
+      cameraStatus = "starting";
+
+      try {
+        video = document.createElement("video");
+        video.muted = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.setAttribute("playsinline", "");
+        video.style.display = "none";
+        document.body.appendChild(video);
+
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        setLoading("Camera stream acquired. Starting video...");
+        video.srcObject = stream;
+        await waitForMetadata(video);
+        await video.play();
+        setLoading("Camera ready. Loading hand tracker...");
+        cameraStatus = "ready";
+        cameraError = "";
+      } catch (error) {
+        cameraStatus = "failed";
+        cameraError = `${error.name || "CameraError"}: ${error.message || String(error)}`;
+        setLoading(`Camera failed: ${cameraError}`, true);
+        startBtn.disabled = false;
+        started = false;
+        return;
+      }
+
+      try {
+        hands = new Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.56,
+          minTrackingConfidence: 0.56
+        });
+        hands.onResults(onHandsResults);
+        handsStatus = "ready";
+        setLoading("Ready.");
+      } catch (error) {
+        handsStatus = "failed";
+        handsError = error.message || String(error);
+        setLoading(`Hand tracker failed: ${handsError}`, true);
+        startBtn.disabled = false;
+        started = false;
+        return;
+      }
+
+      startOverlay.classList.add("hidden");
+    }
+
+    function setLoading(message, isError = false) {
+      loadingText.textContent = message;
+      loadingText.classList.toggle("error", isError);
+    }
+
+    function waitForMetadata(target) {
+      return new Promise((resolve, reject) => {
+        if (target.readyState >= 1 && target.videoWidth > 0 && target.videoHeight > 0) {
+          resolve();
+          return;
+        }
+        const loaded = () => { cleanup(); resolve(); };
+        const failed = () => { cleanup(); reject(target.error || new Error("metadata failed")); };
+        const cleanup = () => {
+          target.removeEventListener("loadedmetadata", loaded);
+          target.removeEventListener("error", failed);
+        };
+        target.addEventListener("loadedmetadata", loaded);
+        target.addEventListener("error", failed);
+      });
+    }
+
+    function isCameraReady() {
+      return Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
+    }
+
+    function buildCloth() {
+      computeClothBox();
+      cloth = [];
+      sticks = [];
+      grabs.clear();
+      restStepX = clothBox.w / (COLS - 1);
+      restStepY = clothBox.h / (ROWS - 1);
+      restArea = restStepX * restStepY;
+
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const px = clothBox.x + x * restStepX;
+          const py = clothBox.y + y * restStepY;
+          cloth.push({
+            x: px,
+            y: py,
+            oldX: px,
+            oldY: py,
+            baseX: px,
+            baseY: py,
+            flyX: px + random(-20, 20),
+            flyY: -85 + random(-35, 5) + y * 1.18,
+            pinned: y === 0,
+            grabWeight: 0,
+            grabId: null,
+            stress: 0
+          });
+        }
+      }
+
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if (x < COLS - 1) addStick(indexAt(x, y), indexAt(x + 1, y), restStepX, 1);
+          if (y < ROWS - 1) addStick(indexAt(x, y), indexAt(x, y + 1), restStepY, 1);
+          if (x < COLS - 1 && y < ROWS - 1) {
+            addStick(indexAt(x, y), indexAt(x + 1, y + 1), Math.hypot(restStepX, restStepY), 0.34);
+            addStick(indexAt(x + 1, y), indexAt(x, y + 1), Math.hypot(restStepX, restStepY), 0.28);
+          }
+        }
+      }
+    }
+
+    function computeClothBox() {
+      const ratio = getMediaRatio();
+      const maxW = width * 0.85 * scaleValue;
+      const maxH = height * 0.55 * scaleValue;
+      let w = maxW;
+      let h = w / ratio;
+      if (h > maxH) {
+        h = maxH;
+        w = h * ratio;
+      }
+      clothBox = { x: (width - w) * 0.5, y: (height - h) * 0.42, w, h };
+    }
+
+    function getMediaRatio() {
+      if (!mediaEl) return 16 / 9;
+      const w = mediaKind === "video" ? mediaEl.videoWidth : mediaEl.naturalWidth;
+      const h = mediaKind === "video" ? mediaEl.videoHeight : mediaEl.naturalHeight;
+      return w && h ? w / h : 16 / 9;
+    }
+
+    function indexAt(x, y) { return y * COLS + x; }
+    function addStick(a, b, len, weight) { sticks.push({ a, b, len, weight }); }
+
+    function updatePhysics() {
+      const controls = collectControls();
+      updateGrabAssignments(controls);
+      applyProximityDisturbance();
+      integratePoints(controls);
+      for (let i = 0; i < ITERATIONS; i++) satisfyConstraints(i);
+      measureClothActivity();
+      shock *= 0.94;
+    }
+
+    function collectControls() {
+      const controls = [];
+      if (millis() - lastHandsAt < 320) {
+        for (const hand of handsState) if (hand.pinched) controls.push(hand);
+      }
+      for (const pointer of pointers.values()) controls.push(pointer);
+      return controls;
+    }
+
+    function updateGrabAssignments(controls) {
+      const live = new Set(controls.map((c) => c.id));
+      for (const [id, grab] of grabs) if (!live.has(id)) releaseGrab(id, grab);
+
+      for (const control of controls) {
+        let grab = grabs.get(control.id);
+        if (!grab) {
+          const nearest = findNearestPoint(control.x, control.y, GRAB_RADIUS);
+          if (nearest >= 0) {
+            grab = createGrab(control.id, nearest, control.x, control.y);
+            grabs.set(control.id, grab);
+          }
+        }
+
+        if (grab) {
+          const dx = control.x - (control.prevX ?? control.x);
+          const dy = control.y - (control.prevY ?? control.y);
+          grab.vx = lerp(grab.vx, dx, 0.42);
+          grab.vy = lerp(grab.vy, dy, 0.42);
+          grab.tx = control.x;
+          grab.ty = control.y;
+          grab.sx = lerp(grab.sx, grab.tx, GRAB_SMOOTHING);
+          grab.sy = lerp(grab.sy, grab.ty, GRAB_SMOOTHING);
+        }
+      }
+    }
+
+    function createGrab(id, nearest, x, y) {
+      const patch = [];
+      for (let i = 0; i < cloth.length; i++) {
+        const p = cloth[i];
+        const d = Math.hypot(p.x - x, p.y - y);
+        if (d <= GRAB_PATCH_RADIUS) {
+          const q = 1 - d / GRAB_PATCH_RADIUS;
+          const w = q * q * (3 - 2 * q);
+          patch.push({ id: i, ox: p.x - x, oy: p.y - y, w });
+          p.grabId = id;
+          p.grabWeight = Math.max(p.grabWeight, w);
+        }
+      }
+      if (!patch.some((p) => p.id === nearest)) {
+        const p = cloth[nearest];
+        patch.push({ id: nearest, ox: p.x - x, oy: p.y - y, w: 1 });
+        p.grabId = id;
+        p.grabWeight = 1;
+      }
+      return { id, patch, tx: x, ty: y, sx: x, sy: y, vx: 0, vy: 0 };
+    }
+
+    function releaseGrab(id, grab) {
+      for (const item of grab.patch) {
+        const p = cloth[item.id];
+        if (p && p.grabId === id) {
+          p.grabId = null;
+          p.grabWeight = 0;
+          p.oldX = p.x - grab.vx * item.w * 0.82;
+          p.oldY = p.y - grab.vy * item.w * 0.82;
+        }
+      }
+      if (grab.vy < -15) {
+        restoreMode = "fly";
+        restoreForce = 0.02;
+      } else if (grab.vy > 15) {
+        restoreMode = "fall";
+        restoreForce = 0.0011;
+      }
+      shock = Math.min(1, shock + Math.min(1, Math.hypot(grab.vx, grab.vy) / 38));
+      grabs.delete(id);
+    }
+
+    function findNearestPoint(x, y, radius) {
+      let nearest = -1;
+      let best = radius * radius;
+      for (let i = 0; i < cloth.length; i++) {
+        const p = cloth[i];
+        const d = sq(p.x - x) + sq(p.y - y);
+        if (d < best) { best = d; nearest = i; }
+      }
+      return nearest;
+    }
+
+    function applyProximityDisturbance() {
+      if (millis() - lastHandsAt > 320) return;
+      for (const hand of handsState) {
+        for (let i = 0; i < cloth.length; i += 2) {
+          const p = cloth[i];
+          const dx = p.x - hand.x;
+          const dy = p.y - hand.y;
+          const d = Math.hypot(dx, dy);
+          if (d > 115 || d < 1) continue;
+          const f = (1 - d / 115) * 0.12;
+          p.x += (dx / d) * f;
+          p.y += (dy / d) * f;
+        }
+      }
+    }
+
+    function integratePoints(controls) {
+      const t = frameCount * 0.012;
+      for (let i = 0; i < cloth.length; i++) {
+        const p = cloth[i];
+        const vx = (p.x - p.oldX) * FRICTION;
+        const vy = (p.y - p.oldY) * FRICTION;
+        p.oldX = p.x;
+        p.oldY = p.y;
+
+        if (p.pinned) {
+          const flutter = (noise(i * 0.11, t) - 0.5) * (0.5 + shock * 1.6);
+          p.x = p.baseX + flutter;
+          p.y = p.baseY;
+          continue;
+        }
+
+        const grab = p.grabId ? grabs.get(p.grabId) : null;
+        if (grab) {
+          const item = grab.patch.find((it) => it.id === i);
+          const w = item ? item.w : p.grabWeight;
+          const targetX = grab.sx + (item ? item.ox * 0.48 : 0);
+          const targetY = grab.sy + (item ? item.oy * 0.48 : 0);
+          p.x += (targetX - p.x) * (0.18 + w * 0.66);
+          p.y += (targetY - p.y) * (0.18 + w * 0.66);
+          p.x += grab.vx * w * 0.16;
+          p.y += grab.vy * w * 0.16;
+          continue;
+        }
+
+        const targetX = restoreMode === "fly" ? p.flyX : p.baseX;
+        const targetY = restoreMode === "fly" ? p.flyY : p.baseY;
+        const wind = 0.05 + clothActivity * 0.16 + shock * 0.32;
+        const breezeX = (noise(i * 0.035, t) - 0.5) * wind;
+        const breezeY = (noise(i * 0.027 + 88, t) - 0.5) * wind;
+        const liquid = restoreMode === "fly" ? restoreForce : restoreForce * (0.7 + clothActivity * 1.4);
+
+        p.x += vx + (targetX - p.x) * liquid + breezeX;
+        p.y += vy + GRAVITY + (targetY - p.y) * liquid + breezeY;
+      }
+    }
+
+    function satisfyConstraints(pass) {
+      for (const s of sticks) {
+        const a = cloth[s.a];
+        const b = cloth[s.b];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const diff = (dist - s.len) / dist;
+        const stiff = STIFFNESS * s.weight * (pass < 4 ? 1.08 : 0.92);
+        const ox = dx * diff * stiff * 0.5;
+        const oy = dy * diff * stiff * 0.5;
+        const aw = a.grabId ? 0.35 : 1;
+        const bw = b.grabId ? 0.35 : 1;
+
+        if (!a.pinned) { a.x += ox * aw; a.y += oy * aw; }
+        if (!b.pinned) { b.x -= ox * bw; b.y -= oy * bw; }
+        const stress = Math.min(1, Math.abs(dist - s.len) / Math.max(1, s.len) * 5);
+        a.stress = Math.max(a.stress * 0.94, stress);
+        b.stress = Math.max(b.stress * 0.94, stress);
+      }
+    }
+
+    function measureClothActivity() {
+      let total = 0;
+      for (const p of cloth) total += Math.hypot(p.x - p.baseX, p.y - p.baseY);
+      clothActivity = constrain(total / cloth.length / 36, 0, 1);
+    }
+
+    function drawCameraBackground() {
+      if (!isCameraReady()) {
+        noStroke();
+        fill(10, 12, 13);
+        rect(0, 0, width, height);
+        fill(255, 255, 255, 80);
+        textAlign(CENTER, CENTER);
+        textSize(18);
+        text(started ? "camera stream not ready" : "Start camera", width / 2, height / 2);
+        return;
+      }
+      drawCamera(drawingContext);
+    }
+
+    function drawHiddenMedia() {
+      const ctx = drawingContext;
+      ctx.save();
+      ctx.beginPath();
+      roundRectPath(ctx, clothBox.x, clothBox.y, clothBox.w, clothBox.h, 2);
+      ctx.clip();
+      if (mediaEl && isMediaReady()) {
+        drawObjectFit(ctx, mediaEl, clothBox.x, clothBox.y, clothBox.w, clothBox.h, getMediaRatio());
+      } else {
+        ctx.fillStyle = "#24272a";
+        ctx.fillRect(clothBox.x, clothBox.y, clothBox.w, clothBox.h);
+        ctx.fillStyle = "rgba(235,240,240,0.62)";
+        ctx.font = `${Math.max(14, Math.min(22, width * 0.022))}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("Upload media hidden behind the cloth", clothBox.x + clothBox.w / 2, clothBox.y + clothBox.h / 2);
+      }
+      ctx.restore();
+    }
+
+    function drawCameraOnCloth() {
+      const ctx = drawingContext;
+      ctx.save();
+      makeSmoothClothPath(ctx, false);
+      ctx.clip();
+      if (isCameraReady()) drawCamera(ctx);
+      ctx.restore();
+    }
+
+    function drawCamera(ctx) {
+      ctx.save();
+      if (mirror) {
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, width, height);
+      ctx.restore();
+    }
+
+    function drawMaterialResponse() {
+      if (clothActivity < 0.008 && shock < 0.01) return;
+      const alphaGate = Math.min(1, clothActivity * 1.25 + shock * 0.45);
+      noStroke();
+      for (let y = 0; y < ROWS - 1; y++) {
+        for (let x = 0; x < COLS - 1; x++) {
+          const p1 = cloth[indexAt(x, y)];
+          const p2 = cloth[indexAt(x + 1, y)];
+          const p3 = cloth[indexAt(x + 1, y + 1)];
+          const p4 = cloth[indexAt(x, y + 1)];
+          const area = Math.abs(
+            p1.x * p2.y - p2.x * p1.y +
+            p2.x * p3.y - p3.x * p2.y +
+            p3.x * p4.y - p4.x * p3.y +
+            p4.x * p1.y - p1.x * p4.y
+          ) * 0.5;
+          const ratio = area / restArea;
+          const fold = noise(x * 0.18, y * 0.18, frameCount * 0.012);
+
+          if (stressView) {
+            const stress = (p1.stress + p2.stress + p3.stress + p4.stress) * 0.25;
+            if (stress < 0.08) continue;
+            fill(255, 80, 80, stress * 120);
+          } else if (ratio < 0.96) {
+            const a = constrain((0.96 - ratio) * 360 + fold * 16, 0, 78) * alphaGate;
+            fill(0, 0, 0, a);
+          } else if (ratio > 1.045) {
+            const a = constrain((ratio - 1.045) * 118 + fold * 8, 0, 42) * alphaGate;
+            fill(255, 255, 255, a);
+          } else {
+            continue;
+          }
+          quad(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y);
+        }
+      }
+      drawSoftEdge(alphaGate);
+    }
+
+    function drawSoftEdge(alphaGate) {
+      const ctx = drawingContext;
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+
+      ctx.strokeStyle = `rgba(0,0,0,${0.06 * alphaGate})`;
+      ctx.lineWidth = 5.5;
+      makeSmoothClothPath(ctx, true);
+      ctx.stroke();
+
+      ctx.shadowColor = `rgba(255,255,255,${0.28 * alphaGate})`;
+      ctx.shadowBlur = 11;
+      ctx.strokeStyle = `rgba(255,255,255,${0.22 * alphaGate})`;
+      ctx.lineWidth = 1.15;
+      makeSmoothClothPath(ctx, true);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function makeSmoothClothPath(ctx, edgeOnly) {
+      const edge = [];
+      for (let x = 0; x < COLS; x++) edge.push(cloth[indexAt(x, 0)]);
+      for (let y = 1; y < ROWS; y++) edge.push(cloth[indexAt(COLS - 1, y)]);
+      for (let x = COLS - 2; x >= 0; x--) edge.push(cloth[indexAt(x, ROWS - 1)]);
+      for (let y = ROWS - 2; y > 0; y--) edge.push(cloth[indexAt(0, y)]);
+
+      ctx.beginPath();
+      for (let i = 0; i < edge.length; i++) {
+        const prev = edge[(i - 1 + edge.length) % edge.length];
+        const p = edge[i];
+        const next = edge[(i + 1) % edge.length];
+        const midX = (p.x + next.x) * 0.5;
+        const midY = (p.y + next.y) * 0.5;
+        if (i === 0) ctx.moveTo((prev.x + p.x) * 0.5, (prev.y + p.y) * 0.5);
+        ctx.quadraticCurveTo(p.x, p.y, midX, midY);
+      }
+      ctx.closePath();
+    }
+
+    function roundRectPath(ctx, x, y, w, h, r) {
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function drawObjectFit(ctx, el, x, y, w, h, ratio) {
+      const boxRatio = w / h;
+      let dw = w, dh = h, dx = x, dy = y;
+      if (ratio > boxRatio) { dh = h; dw = h * ratio; dx = x - (dw - w) / 2; }
+      else { dw = w; dh = w / ratio; dy = y - (dh - h) / 2; }
+      ctx.drawImage(el, dx, dy, dw, dh);
+    }
+
+    function drawProximityField() {
+      if (!debugVisible || millis() - lastHandsAt > 320) return;
+      push();
+      noFill();
+      stroke(120, 255, 210, 90);
+      strokeWeight(1);
+      for (const h of handsState) circle(h.x, h.y, 230);
+      pop();
+    }
+
+    async function updateHandsPipeline() {
+      if (!isCameraReady()) return;
+      if (!hands || handsBusy || frameCount % 2 !== 0) return;
+      handsBusy = true;
+      try {
+        await hands.send({ image: video });
+        handsError = "";
+      } catch (error) {
+        handsError = error.message || String(error);
+      } finally {
+        handsBusy = false;
+      }
+    }
+
+    function onHandsResults(results) {
+      const raw = results.multiHandLandmarks || [];
+      const candidates = raw.map((lm, rawId) => {
+        const thumb = landmarkToCanvas(lm[4]);
+        const index = landmarkToCanvas(lm[8]);
+        const x = (thumb.x + index.x) / 2;
+        const y = (thumb.y + index.y) / 2;
+        const pinch = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+        return { rawId, x, y, thumb, index, pinch, points: lm.map(landmarkToCanvas) };
+      });
+
+      const next = [];
+      const used = new Set();
+      for (const c of candidates) {
+        let bestIdx = -1;
+        let bestDist = HAND_MATCH_RADIUS;
+        for (let i = 0; i < prevHandsState.length; i++) {
+          if (used.has(i)) continue;
+          const prev = prevHandsState[i];
+          const d = Math.hypot(c.x - prev.x, c.y - prev.y);
+          if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        const prev = bestIdx >= 0 ? prevHandsState[bestIdx] : null;
+        if (bestIdx >= 0) used.add(bestIdx);
+        const wasPinched = prev ? prev.pinched : false;
+        const pinched = wasPinched ? c.pinch < PINCH_UP : c.pinch < PINCH_DOWN;
+        const sx = prev ? lerp(prev.x, c.x, 0.62) : c.x;
+        const sy = prev ? lerp(prev.y, c.y, 0.62) : c.y;
+        next.push({
+          id: prev ? prev.id : `hand-${Date.now()}-${c.rawId}`,
+          x: sx,
+          y: sy,
+          prevX: prev ? prev.x : sx,
+          prevY: prev ? prev.y : sy,
+          pinch: c.pinch,
+          pinched,
+          thumb: c.thumb,
+          index: c.index,
+          points: c.points
+        });
+      }
+      handsState = next;
+      prevHandsState = next;
+      lastHandsAt = millis();
+    }
+
+    function landmarkToCanvas(lm) {
+      return { x: (mirror ? 1 - lm.x : lm.x) * width, y: lm.y * height };
+    }
+
+    function handleMediaUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (mediaUrl) URL.revokeObjectURL(mediaUrl);
+      mediaUrl = URL.createObjectURL(file);
+      mediaKind = file.type.startsWith("video") ? "video" : "image";
+
+      if (mediaKind === "video") {
+        const el = document.createElement("video");
+        el.src = mediaUrl;
+        el.loop = true;
+        el.muted = true;
+        el.playsInline = true;
+        el.autoplay = true;
+        el.addEventListener("loadedmetadata", () => {
+          mediaEl = el;
+          el.play().catch(() => {});
+          buildCloth();
+        }, { once: true });
+        mediaEl = el;
+      } else {
+        const img = new Image();
+        img.onload = () => { mediaEl = img; buildCloth(); };
+        img.src = mediaUrl;
+        mediaEl = img;
+      }
+    }
+
+    function isMediaReady() {
+      if (!mediaEl) return false;
+      return mediaKind === "video" ? mediaEl.readyState >= 2 && mediaEl.videoWidth > 0 : mediaEl.complete && mediaEl.naturalWidth > 0;
+    }
+
+    function updateDebug() {
+      if (!debugVisible) return;
+      const fresh = millis() - lastHandsAt < 320;
+      const pinch = fresh && handsState.length ? handsState.map((h) => h.pinch.toFixed(3)).join(", ") : "-";
+      debugEl.textContent =
+        `fps: ${fpsSmooth.toFixed(1)}\n` +
+        `camera: ${isCameraReady() ? "ready" : cameraStatus}\n` +
+        `hands: ${fresh && handsState.length ? "detected" : "not detected"}\n` +
+        `pinch: ${pinch}\n` +
+        `active grabbed points: ${Array.from(grabs.values()).reduce((n, g) => n + g.patch.length, 0)}\n` +
+        `cloth activity: ${clothActivity.toFixed(3)}\n` +
+        `shock: ${shock.toFixed(3)}\n` +
+        `media uploaded: ${Boolean(mediaEl && isMediaReady())}\n` +
+        `stress view: ${stressView} (press S)\n` +
+        `camera error: ${cameraError || "-"}\n` +
+        `hands error: ${handsError || "-"}`;
+    }
+
+    function pointerStarted(event) {
+      const id = `pointer-${event.pointerId ?? "mouse"}`;
+      const p = pointerFromEvent(event);
+      pointers.set(id, { id, x: p.x, y: p.y, prevX: p.x, prevY: p.y, pinched: true });
+      return false;
+    }
+    function pointerMoved(event) {
+      const id = `pointer-${event.pointerId ?? "mouse"}`;
+      const p = pointerFromEvent(event);
+      const prev = pointers.get(id);
+      if (prev) { prev.prevX = prev.x; prev.prevY = prev.y; prev.x = p.x; prev.y = p.y; }
+      return false;
+    }
+    function pointerEnded(event) {
+      const id = `pointer-${event.pointerId ?? "mouse"}`;
+      const grab = grabs.get(id);
+      if (grab) releaseGrab(id, grab);
+      pointers.delete(id);
+      return false;
+    }
+    function pointerFromEvent(event) {
+      const t = event.changedTouches && event.changedTouches[0];
+      return { x: t ? t.clientX : event.clientX, y: t ? t.clientY : event.clientY };
+    }
+    function mousePressed(event) { return pointerStarted(event); }
+    function mouseDragged(event) { return pointerMoved(event); }
+    function mouseReleased(event) { return pointerEnded(event); }
+    function touchStarted(event) {
+      for (const t of event.changedTouches || []) pointers.set(`pointer-${t.identifier}`, { id: `pointer-${t.identifier}`, x: t.clientX, y: t.clientY, prevX: t.clientX, prevY: t.clientY, pinched: true });
+      return false;
+    }
+    function touchMoved(event) {
+      for (const t of event.changedTouches || []) {
+        const p = pointers.get(`pointer-${t.identifier}`);
+        if (p) { p.prevX = p.x; p.prevY = p.y; p.x = t.clientX; p.y = t.clientY; }
+      }
+      return false;
+    }
+    function touchEnded(event) {
+      for (const t of event.changedTouches || []) {
+        const id = `pointer-${t.identifier}`;
+        const grab = grabs.get(id);
+        if (grab) releaseGrab(id, grab);
+        pointers.delete(id);
+      }
+      return false;
+    }
+
+    function windowResized() {
+      resizeCanvas(windowWidth, windowHeight);
+      buildCloth();
+    }
+  </script>
+</body>
+</html>
