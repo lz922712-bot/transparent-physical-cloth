@@ -152,7 +152,7 @@
       <circle cx="12" cy="12" r="5"></circle>
     </svg>
   </button>
-  <div id="debug" class="debug"></div>
+  <div id="debug" class="debug visible"></div>
 
   <div class="hud">
     <div class="row">
@@ -163,6 +163,12 @@
       <span>Mirror camera</span>
       <button id="mirrorBtn" class="icon-btn" title="Mirror camera" aria-label="Mirror camera">
         <svg viewBox="0 0 24 24"><path d="M8 7h8a4 4 0 0 1 0 8H7"></path><path d="M10 11 6 15l4 4"></path></svg>
+      </button>
+    </div>
+    <div class="row">
+      <span id="cameraLabel">Camera: front</span>
+      <button id="cameraBtn" class="icon-btn" title="Switch camera" aria-label="Switch camera">
+        <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13.5" r="3.2"></circle><path d="M17.5 5.5 20 8l-2.5 2.5"></path></svg>
       </button>
     </div>
     <div class="row">
@@ -191,9 +197,11 @@
     let handsBusy = false;
     let started = false;
     let mirror = true;
-    let debugVisible = false;
+    let debugVisible = true;
+    let cameraFacing = "user";
     let cameraStatus = "idle";
-    let cameraError = "";
+    let cameraErrorName = "";
+    let cameraErrorMessage = "";
     let handsStatus = "idle";
     let handsError = "";
 
@@ -228,6 +236,8 @@
     const loadingText = document.getElementById("loadingText");
     const mediaInput = document.getElementById("mediaInput");
     const mirrorBtn = document.getElementById("mirrorBtn");
+    const cameraBtn = document.getElementById("cameraBtn");
+    const cameraLabel = document.getElementById("cameraLabel");
     const scaleSlider = document.getElementById("scaleSlider");
     const debugBtn = document.getElementById("debugBtn");
     const debugEl = document.getElementById("debug");
@@ -261,6 +271,7 @@
       startBtn.addEventListener("click", startExperience);
       mediaInput.addEventListener("change", handleMediaUpload);
       mirrorBtn.addEventListener("click", () => { mirror = !mirror; });
+      cameraBtn.addEventListener("click", switchCamera);
       scaleSlider.addEventListener("input", () => {
         scaleValue = Number(scaleSlider.value);
         buildCloth();
@@ -284,54 +295,139 @@
       cameraStatus = "starting";
 
       try {
-        video = document.createElement("video");
-        video.muted = true;
-        video.autoplay = true;
-        video.playsInline = true;
-        video.setAttribute("playsinline", "");
-        video.style.display = "none";
-        document.body.appendChild(video);
-
-        stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        setLoading("Camera stream acquired. Starting video...");
-        video.srcObject = stream;
-        await waitForMetadata(video);
-        await video.play();
-        setLoading("Camera ready. Loading hand tracker...");
-        cameraStatus = "ready";
-        cameraError = "";
+        await startCameraStream(cameraFacing);
       } catch (error) {
-        cameraStatus = "failed";
-        cameraError = `${error.name || "CameraError"}: ${error.message || String(error)}`;
-        setLoading(`Camera failed: ${cameraError}`, true);
         startBtn.disabled = false;
         started = false;
         return;
       }
 
       try {
-        hands = new Hands({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        });
-        hands.setOptions({
-          maxNumHands: 2,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.56,
-          minTrackingConfidence: 0.56
-        });
-        hands.onResults(onHandsResults);
-        handsStatus = "ready";
-        setLoading("Ready.");
+        await initHands();
       } catch (error) {
-        handsStatus = "failed";
-        handsError = error.message || String(error);
-        setLoading(`Hand tracker failed: ${handsError}`, true);
         startBtn.disabled = false;
         started = false;
         return;
       }
 
       startOverlay.classList.add("hidden");
+    }
+
+    async function startCameraStream(facing) {
+      cameraStatus = "starting";
+      cameraErrorName = "";
+      cameraErrorMessage = "";
+      setLoading(`Requesting ${facing === "user" ? "front" : "rear"} camera permission...`);
+
+      ensureVideoElement();
+      stopCameraStream();
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(getCameraConstraints(facing, true));
+      } catch (error) {
+        if (facing === "environment" && error && error.name === "OverconstrainedError") {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(getCameraConstraints(facing, false));
+          } catch (fallbackError) {
+            showCameraError(fallbackError);
+            throw fallbackError;
+          }
+        } else {
+          showCameraError(error);
+          throw error;
+        }
+      }
+
+      cameraStatus = "getUserMedia success";
+      setLoading("Camera stream acquired. Starting inline video...");
+      video.srcObject = stream;
+      await video.play();
+      await waitForMetadata(video);
+      cameraStatus = "ready";
+      setLoading("Camera ready. Loading hand tracker...");
+      updateCameraLabel();
+    }
+
+    function ensureVideoElement() {
+      if (video) return;
+      video = document.createElement("video");
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute("playsinline", true);
+      video.setAttribute("webkit-playsinline", true);
+      video.style.display = "none";
+      document.body.appendChild(video);
+    }
+
+    function getCameraConstraints(facing, preferExact) {
+      const facingMode = facing === "environment"
+        ? (preferExact ? { exact: "environment" } : "environment")
+        : "user";
+      return {
+        video: {
+          facingMode,
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
+    }
+
+    function stopCameraStream() {
+      if (stream) {
+        for (const track of stream.getTracks()) track.stop();
+      }
+      stream = null;
+      if (video) video.srcObject = null;
+    }
+
+    async function initHands() {
+      hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+      hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.56,
+        minTrackingConfidence: 0.56
+      });
+      hands.onResults(onHandsResults);
+      handsStatus = "ready";
+      handsError = "";
+      setLoading("Ready.");
+    }
+
+    async function switchCamera() {
+      cameraFacing = cameraFacing === "user" ? "environment" : "user";
+      updateCameraLabel();
+      if (!started) return;
+      try {
+        cameraBtn.disabled = true;
+        setLoading(`Switching to ${cameraFacing === "user" ? "front" : "rear"} camera...`);
+        await startCameraStream(cameraFacing);
+      } catch (error) {
+        cameraFacing = cameraFacing === "user" ? "environment" : "user";
+        updateCameraLabel();
+      } finally {
+        cameraBtn.disabled = false;
+      }
+    }
+
+    function updateCameraLabel() {
+      cameraLabel.textContent = `Camera: ${cameraFacing === "user" ? "front" : "rear"}`;
+    }
+
+    function showCameraError(error) {
+      cameraStatus = "failed";
+      cameraErrorName = error && error.name ? error.name : "CameraError";
+      cameraErrorMessage = error && error.message ? error.message : String(error);
+      let hint = "";
+      if (cameraErrorName === "NotAllowedError") hint = "Permission denied. Allow camera access in browser settings.";
+      else if (cameraErrorName === "NotFoundError") hint = "No camera was found on this device.";
+      else if (cameraErrorName === "NotReadableError") hint = "Camera is busy or blocked by another app.";
+      else if (cameraErrorName === "OverconstrainedError") hint = "Requested camera mode is not supported. Try switching camera.";
+      setLoading(`Camera failed: ${cameraErrorName}: ${cameraErrorMessage}${hint ? " - " + hint : ""}`, true);
     }
 
     function setLoading(message, isError = false) {
@@ -873,9 +969,21 @@
       if (!debugVisible) return;
       const fresh = millis() - lastHandsAt < 320;
       const pinch = fresh && handsState.length ? handsState.map((h) => h.pinch.toFixed(3)).join(", ") : "-";
+      const mobile = isMobileDevice();
+      const videoWidth = video ? video.videoWidth : 0;
+      const videoHeight = video ? video.videoHeight : 0;
+      const videoPaused = video ? video.paused : "-";
       debugEl.textContent =
         `fps: ${fpsSmooth.toFixed(1)}\n` +
+        `isMobile: ${mobile}\n` +
+        `isSecureContext: ${window.isSecureContext}\n` +
+        `userAgent: ${navigator.userAgent}\n` +
         `camera: ${isCameraReady() ? "ready" : cameraStatus}\n` +
+        `camera facing: ${cameraFacing}\n` +
+        `videoWidth/videoHeight: ${videoWidth} / ${videoHeight}\n` +
+        `video.paused: ${videoPaused}\n` +
+        `error.name: ${cameraErrorName || "-"}\n` +
+        `error.message: ${cameraErrorMessage || "-"}\n` +
         `hands: ${fresh && handsState.length ? "detected" : "not detected"}\n` +
         `pinch: ${pinch}\n` +
         `active grabbed points: ${Array.from(grabs.values()).reduce((n, g) => n + g.patch.length, 0)}\n` +
@@ -883,8 +991,11 @@
         `shock: ${shock.toFixed(3)}\n` +
         `media uploaded: ${Boolean(mediaEl && isMediaReady())}\n` +
         `stress view: ${stressView} (press S)\n` +
-        `camera error: ${cameraError || "-"}\n` +
         `hands error: ${handsError || "-"}`;
+    }
+
+    function isMobileDevice() {
+      return /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent);
     }
 
     function pointerStarted(event) {
