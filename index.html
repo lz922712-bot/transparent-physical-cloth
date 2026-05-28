@@ -3,13 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Mobile Camera Debug Minimal</title>
+  <title>Minimal Mobile Camera Test</title>
   <style>
-    * {
-      box-sizing: border-box;
-      -webkit-tap-highlight-color: transparent;
-    }
-
     html,
     body {
       width: 100%;
@@ -19,171 +14,85 @@
       touch-action: none;
       overscroll-behavior: none;
       background: #050607;
-      color: #f4fffc;
+      color: white;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    main {
-      min-height: 100%;
+    body {
       display: grid;
       grid-template-rows: auto 1fr auto;
       gap: 12px;
       padding: 14px;
+      box-sizing: border-box;
     }
 
-    .panel {
-      border: 1px solid rgba(255,255,255,0.18);
-      border-radius: 8px;
-      background: rgba(255,255,255,0.06);
+    #statusBox {
+      min-height: 64px;
       padding: 12px;
-    }
-
-    h1 {
-      margin: 0 0 8px;
-      font-size: 20px;
-      letter-spacing: 0;
-    }
-
-    #status {
-      margin: 0;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
       white-space: pre-wrap;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.55;
-      color: rgba(244,255,252,0.9);
+      font-size: 16px;
+      line-height: 1.45;
     }
 
     video {
       width: 100%;
       height: 100%;
       min-height: 240px;
-      border: 1px solid rgba(255,255,255,0.2);
+      border: 1px solid rgba(255, 255, 255, 0.22);
       border-radius: 8px;
-      background: #111416;
+      background: #111;
       object-fit: cover;
-      transform: scaleX(-1);
     }
 
     button {
       width: 100%;
-      height: 52px;
+      height: 54px;
       border: 0;
       border-radius: 8px;
       background: #eafff8;
       color: #06100d;
       font: inherit;
+      font-size: 18px;
       font-weight: 800;
-      cursor: pointer;
-    }
-
-    button:disabled {
-      opacity: 0.55;
-      cursor: wait;
     }
   </style>
 </head>
 <body>
-  <main>
-    <section class="panel">
-      <h1>Mobile Camera Debug Minimal</h1>
-      <pre id="status">READY. Tap Start.</pre>
-    </section>
-
-    <video id="video" muted autoplay playsinline></video>
-
-    <button id="startBtn" type="button">Start</button>
-  </main>
+  <div id="statusBox">READY</div>
+  <video id="video" autoplay muted playsinline></video>
+  <button id="startBtn" type="button">Start</button>
 
   <script>
     const startBtn = document.getElementById("startBtn");
-    const statusEl = document.getElementById("status");
+    const statusBox = document.getElementById("statusBox");
     const video = document.getElementById("video");
 
-    let stream = null;
-
-    function setStatus(lines) {
-      statusEl.textContent = Array.isArray(lines) ? lines.join("\n") : lines;
-    }
-
-    function videoState() {
-      return [
-        `isSecureContext: ${window.isSecureContext}`,
-        `userAgent: ${navigator.userAgent}`,
-        `video.srcObject exists: ${Boolean(video.srcObject)}`,
-        `video.readyState: ${video.readyState}`,
-        `video.videoWidth/videoHeight: ${video.videoWidth} / ${video.videoHeight}`,
-        `video.paused: ${video.paused}`
-      ];
-    }
-
-    async function startCamera() {
-      startBtn.disabled = true;
-
-      // Requirement 1: prove the click handler fires before any camera work.
-      setStatus([
-        "START CLICKED",
-        ...videoState()
-      ]);
+    startBtn.addEventListener("click", async () => {
+      statusBox.textContent = "START CLICKED";
 
       try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error("navigator.mediaDevices.getUserMedia is not available");
-        }
-
-        setStatus([
-          "START CLICKED",
-          "requesting camera...",
-          ...videoState()
-        ]);
-
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "user",
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          },
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
           audio: false
         });
 
-        setStatus([
-          "START CLICKED",
-          "camera stream received",
-          ...videoState()
-        ]);
-
-        video.setAttribute("playsinline", "true");
-        video.setAttribute("webkit-playsinline", "true");
-        video.muted = true;
-        video.autoplay = true;
         video.srcObject = stream;
-
-        setStatus([
-          "START CLICKED",
-          "video srcObject set",
-          ...videoState()
-        ]);
+        video.setAttribute("playsinline", true);
+        video.setAttribute("webkit-playsinline", true);
+        video.muted = true;
 
         await video.play();
 
-        setStatus([
-          "START CLICKED",
-          "video play started",
-          "CAMERA READY",
-          ...videoState()
-        ]);
-      } catch (error) {
-        setStatus([
-          "START CLICKED",
-          "ERROR",
-          `error.name: ${error && error.name ? error.name : "Error"}`,
-          `error.message: ${error && error.message ? error.message : String(error)}`,
-          ...videoState()
-        ]);
-        startBtn.disabled = false;
+        statusBox.textContent = "CAMERA OK";
+      } catch (e) {
+        statusBox.textContent =
+          "ERROR: " + (e && e.name ? e.name : "UnknownError") +
+          " / " + (e && e.message ? e.message : String(e));
       }
-    }
-
-    startBtn.addEventListener("click", startCamera);
+    });
   </script>
 </body>
 </html>
