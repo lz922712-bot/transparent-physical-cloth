@@ -172,6 +172,12 @@
       </button>
     </div>
     <div class="row">
+      <span>Hand tracking</span>
+      <button id="handBtn" class="icon-btn" title="Enable hand tracking" aria-label="Enable hand tracking">
+        <svg viewBox="0 0 24 24"><path d="M8 11V6.5a1.5 1.5 0 0 1 3 0V11"></path><path d="M11 10V5.5a1.5 1.5 0 0 1 3 0V11"></path><path d="M14 11V7a1.5 1.5 0 0 1 3 0v6"></path><path d="M8 11v2l-1.2-1.2a1.7 1.7 0 0 0-2.4 2.4l4.2 4.2A5.4 5.4 0 0 0 12.4 20H14a5 5 0 0 0 5-5v-3"></path></svg>
+      </button>
+    </div>
+    <div class="row">
       <span>Cloth scale</span>
       <input id="scaleSlider" class="slider" type="range" min="0.62" max="1.18" step="0.01" value="1">
     </div>
@@ -204,6 +210,11 @@
     let cameraErrorMessage = "";
     let handsStatus = "idle";
     let handsError = "";
+    let handsEnabled = false;
+    let startupStep = "idle";
+    let startupLog = ["idle"];
+    let flowErrorName = "";
+    let flowErrorMessage = "";
 
     let mediaEl = null;
     let mediaKind = null;
@@ -238,6 +249,7 @@
     const mirrorBtn = document.getElementById("mirrorBtn");
     const cameraBtn = document.getElementById("cameraBtn");
     const cameraLabel = document.getElementById("cameraLabel");
+    const handBtn = document.getElementById("handBtn");
     const scaleSlider = document.getElementById("scaleSlider");
     const debugBtn = document.getElementById("debugBtn");
     const debugEl = document.getElementById("debug");
@@ -272,6 +284,7 @@
       mediaInput.addEventListener("change", handleMediaUpload);
       mirrorBtn.addEventListener("click", () => { mirror = !mirror; });
       cameraBtn.addEventListener("click", switchCamera);
+      handBtn.addEventListener("click", enableHandTracking);
       scaleSlider.addEventListener("input", () => {
         scaleValue = Number(scaleSlider.value);
         buildCloth();
@@ -289,9 +302,9 @@
 
     async function startExperience() {
       if (started) return;
+      setFlowStep("Start clicked");
       started = true;
       startBtn.disabled = true;
-      setLoading("Requesting camera permission...");
       cameraStatus = "starting";
 
       try {
@@ -302,14 +315,7 @@
         return;
       }
 
-      try {
-        await initHands();
-      } catch (error) {
-        startBtn.disabled = false;
-        started = false;
-        return;
-      }
-
+      setFlowStep("entering main scene");
       startOverlay.classList.add("hidden");
     }
 
@@ -317,34 +323,41 @@
       cameraStatus = "starting";
       cameraErrorName = "";
       cameraErrorMessage = "";
-      setLoading(`Requesting ${facing === "user" ? "front" : "rear"} camera permission...`);
 
-      ensureVideoElement();
-      stopCameraStream();
-
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(getCameraConstraints(facing, true));
-      } catch (error) {
-        if (facing === "environment" && error && error.name === "OverconstrainedError") {
-          try {
+      await runStartupStep("requesting camera", async () => {
+        ensureVideoElement();
+        stopCameraStream();
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(getCameraConstraints(facing, true));
+        } catch (error) {
+          if (facing === "environment" && error && error.name === "OverconstrainedError") {
             stream = await navigator.mediaDevices.getUserMedia(getCameraConstraints(facing, false));
-          } catch (fallbackError) {
-            showCameraError(fallbackError);
-            throw fallbackError;
+          } else {
+            throw error;
           }
-        } else {
-          showCameraError(error);
-          throw error;
         }
-      }
+      }, showCameraError);
 
-      cameraStatus = "getUserMedia success";
-      setLoading("Camera stream acquired. Starting inline video...");
-      video.srcObject = stream;
-      await video.play();
-      await waitForMetadata(video);
-      cameraStatus = "ready";
-      setLoading("Camera ready. Loading hand tracker...");
+      await runStartupStep("camera stream received", async () => {
+        if (!stream) throw new Error("getUserMedia returned no stream");
+        cameraStatus = "getUserMedia success";
+      }, showCameraError);
+
+      await runStartupStep("video srcObject set", async () => {
+        video.srcObject = stream;
+        if (!video.srcObject) throw new Error("video.srcObject is empty after assignment");
+      }, showCameraError);
+
+      await runStartupStep("waiting loadedmetadata", async () => {
+        await waitForMetadata(video);
+      }, showCameraError);
+
+      await runStartupStep("video play started", async () => {
+        await video.play();
+        if (video.paused) throw new Error("video.play resolved but video is paused");
+        cameraStatus = "ready";
+      }, showCameraError);
+
       updateCameraLabel();
     }
 
@@ -382,20 +395,42 @@
       if (video) video.srcObject = null;
     }
 
+    async function enableHandTracking() {
+      if (!isCameraReady()) {
+        handsStatus = "camera not ready";
+        handsError = "Start camera first. Touch dragging still works.";
+        return;
+      }
+      handBtn.disabled = true;
+      try {
+        await initHands();
+      } catch (error) {
+        handsStatus = "failed";
+        handsError = `${error.name || "MediaPipeError"}: ${error.message || String(error)}`;
+      } finally {
+        handBtn.disabled = false;
+      }
+    }
+
     async function initHands() {
-      hands = new Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-      });
-      hands.setOptions({
-        maxNumHands: 2,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.56,
-        minTrackingConfidence: 0.56
-      });
-      hands.onResults(onHandsResults);
-      handsStatus = "ready";
-      handsError = "";
-      setLoading("Ready.");
+      await runStartupStep("loading MediaPipe", async () => {
+        hands = new Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.56,
+          minTrackingConfidence: 0.56
+        });
+        hands.onResults(onHandsResults);
+      }, showHandsError);
+
+      await runStartupStep("MediaPipe loaded", async () => {
+        handsEnabled = true;
+        handsStatus = "ready";
+        handsError = "";
+      }, showHandsError);
     }
 
     async function switchCamera() {
@@ -418,6 +453,25 @@
       cameraLabel.textContent = `Camera: ${cameraFacing === "user" ? "front" : "rear"}`;
     }
 
+    async function runStartupStep(label, task, onError) {
+      setFlowStep(label);
+      try {
+        await task();
+      } catch (error) {
+        flowErrorName = error && error.name ? error.name : "Error";
+        flowErrorMessage = error && error.message ? error.message : String(error);
+        if (onError) onError(error);
+        throw error;
+      }
+    }
+
+    function setFlowStep(label) {
+      startupStep = label;
+      startupLog.push(label);
+      if (startupLog.length > 14) startupLog.shift();
+      setLoading(label);
+    }
+
     function showCameraError(error) {
       cameraStatus = "failed";
       cameraErrorName = error && error.name ? error.name : "CameraError";
@@ -428,6 +482,13 @@
       else if (cameraErrorName === "NotReadableError") hint = "Camera is busy or blocked by another app.";
       else if (cameraErrorName === "OverconstrainedError") hint = "Requested camera mode is not supported. Try switching camera.";
       setLoading(`Camera failed: ${cameraErrorName}: ${cameraErrorMessage}${hint ? " - " + hint : ""}`, true);
+    }
+
+    function showHandsError(error) {
+      handsStatus = "failed";
+      handsEnabled = false;
+      handsError = `${error && error.name ? error.name : "MediaPipeError"}: ${error && error.message ? error.message : String(error)}`;
+      setLoading(`Hand tracking failed. Touch dragging is still available. ${handsError}`, true);
     }
 
     function setLoading(message, isError = false) {
@@ -870,7 +931,7 @@
 
     async function updateHandsPipeline() {
       if (!isCameraReady()) return;
-      if (!hands || handsBusy || frameCount % 2 !== 0) return;
+      if (!handsEnabled || !hands || handsBusy || frameCount % 2 !== 0) return;
       handsBusy = true;
       try {
         await hands.send({ image: video });
@@ -978,13 +1039,18 @@
         `isMobile: ${mobile}\n` +
         `isSecureContext: ${window.isSecureContext}\n` +
         `userAgent: ${navigator.userAgent}\n` +
+        `startup step: ${startupStep}\n` +
+        `startup log: ${startupLog.join(" > ")}\n` +
+        `flow error.name: ${flowErrorName || "-"}\n` +
+        `flow error.message: ${flowErrorMessage || "-"}\n` +
         `camera: ${isCameraReady() ? "ready" : cameraStatus}\n` +
         `camera facing: ${cameraFacing}\n` +
         `videoWidth/videoHeight: ${videoWidth} / ${videoHeight}\n` +
         `video.paused: ${videoPaused}\n` +
         `error.name: ${cameraErrorName || "-"}\n` +
         `error.message: ${cameraErrorMessage || "-"}\n` +
-        `hands: ${fresh && handsState.length ? "detected" : "not detected"}\n` +
+        `hands enabled: ${handsEnabled}\n` +
+        `hands: ${fresh && handsState.length ? "detected" : handsStatus}\n` +
         `pinch: ${pinch}\n` +
         `active grabbed points: ${Array.from(grabs.values()).reduce((n, g) => n + g.patch.length, 0)}\n` +
         `cloth activity: ${clothActivity.toFixed(3)}\n` +
