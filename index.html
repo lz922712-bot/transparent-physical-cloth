@@ -3,8 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>Minimal Mobile Camera Test</title>
+  <title>Layered Mobile Recovery Test</title>
   <style>
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     html,
     body {
       width: 100%;
@@ -18,67 +23,185 @@
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    body {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      gap: 12px;
-      padding: 14px;
-      box-sizing: border-box;
-    }
-
-    #statusBox {
-      min-height: 64px;
-      padding: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.22);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.08);
-      white-space: pre-wrap;
-      font-size: 16px;
-      line-height: 1.45;
-    }
-
-    video {
+    #video {
+      position: fixed;
+      inset: 0;
       width: 100%;
       height: 100%;
-      min-height: 240px;
-      border: 1px solid rgba(255, 255, 255, 0.22);
-      border-radius: 8px;
-      background: #111;
       object-fit: cover;
+      background: #111;
+      transform: scaleX(-1);
+      z-index: 1;
+    }
+
+    canvas {
+      pointer-events: none !important;
+    }
+
+    #overlayCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    #p5Layer {
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }
+
+    .panel {
+      position: fixed;
+      left: 10px;
+      right: 10px;
+      top: 10px;
+      z-index: 20;
+      display: grid;
+      gap: 8px;
+      max-height: calc(100% - 20px);
+      overflow: auto;
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 8px;
+      background: rgba(0,0,0,0.72);
+      backdrop-filter: blur(12px);
+    }
+
+    .buttons {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
     }
 
     button {
-      width: 100%;
-      height: 54px;
+      min-height: 44px;
       border: 0;
       border-radius: 8px;
+      padding: 8px;
       background: #eafff8;
       color: #06100d;
       font: inherit;
-      font-size: 18px;
       font-weight: 800;
+    }
+
+    button:disabled {
+      opacity: 0.42;
+    }
+
+    #statusBox {
+      min-height: 130px;
+      margin: 0;
+      padding: 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.08);
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .hint {
+      margin: 0;
+      color: rgba(255,255,255,0.68);
+      font-size: 12px;
+      line-height: 1.35;
     }
   </style>
 </head>
 <body>
-  <div id="statusBox">READY</div>
   <video id="video" autoplay muted playsinline></video>
-  <button id="startBtn" type="button">Start</button>
+  <div id="p5Layer"></div>
+
+  <section class="panel">
+    <div class="buttons">
+      <button id="startBtn">1 Start Camera</button>
+      <button id="canvasBtn" disabled>2 Add Canvas</button>
+      <button id="p5Btn" disabled>3 Add p5</button>
+      <button id="mpBtn" disabled>4 Load MediaPipe</button>
+      <button id="trackBtn" disabled>5 Hand Tracking</button>
+      <button id="clothBtn" disabled>6 Add Cloth</button>
+    </div>
+    <pre id="statusBox">READY. Tap 1 Start Camera.</pre>
+    <p class="hint">Each layer is added manually. If one step fails on mobile, the error appears here. Canvas and p5 layers use pointer-events: none so they cannot block buttons.</p>
+  </section>
 
   <script>
-    const startBtn = document.getElementById("startBtn");
-    const statusBox = document.getElementById("statusBox");
     const video = document.getElementById("video");
+    const statusBox = document.getElementById("statusBox");
+    const startBtn = document.getElementById("startBtn");
+    const canvasBtn = document.getElementById("canvasBtn");
+    const p5Btn = document.getElementById("p5Btn");
+    const mpBtn = document.getElementById("mpBtn");
+    const trackBtn = document.getElementById("trackBtn");
+    const clothBtn = document.getElementById("clothBtn");
+    const p5Layer = document.getElementById("p5Layer");
+
+    let stream = null;
+    let overlayCanvas = null;
+    let overlayCtx = null;
+    let p5Instance = null;
+    let hands = null;
+    let handTracking = false;
+    let handBusy = false;
+    let detectedHands = [];
+    let clothEnabled = false;
+    let clothPoints = [];
+    let clothSticks = [];
+    let grabbed = null;
+    let pointer = null;
+    let lastFrame = performance.now();
+    let fps = 60;
+    let logLines = ["READY"];
+
+    function log(line) {
+      logLines.push(line);
+      if (logLines.length > 18) logLines.shift();
+      renderStatus();
+    }
+
+    function fail(step, error) {
+      const name = error && error.name ? error.name : "Error";
+      const message = error && error.message ? error.message : String(error);
+      log(`${step} FAILED`);
+      log(`ERROR: ${name} / ${message}`);
+      renderStatus();
+    }
+
+    function renderStatus() {
+      statusBox.textContent = [
+        ...logLines,
+        "",
+        `isSecureContext: ${window.isSecureContext}`,
+        `userAgent: ${navigator.userAgent}`,
+        `video.readyState: ${video.readyState}`,
+        `video.videoWidth/videoHeight: ${video.videoWidth} / ${video.videoHeight}`,
+        `video.paused: ${video.paused}`,
+        `canvas: ${Boolean(overlayCanvas)}`,
+        `p5: ${Boolean(p5Instance)}`,
+        `MediaPipe Hands: ${Boolean(window.Hands)}`,
+        `hand tracking: ${handTracking}`,
+        `hands detected: ${detectedHands.length}`,
+        `cloth: ${clothEnabled}`,
+        `fps: ${fps.toFixed(1)}`
+      ].join("\n");
+    }
 
     startBtn.addEventListener("click", async () => {
-      statusBox.textContent = "START CLICKED";
+      logLines = [];
+      log("START CLICKED");
+      startBtn.disabled = true;
 
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const s = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false
         });
 
+        stream = s;
         video.srcObject = stream;
         video.setAttribute("playsinline", true);
         video.setAttribute("webkit-playsinline", true);
@@ -86,13 +209,296 @@
 
         await video.play();
 
-        statusBox.textContent = "CAMERA OK";
-      } catch (e) {
-        statusBox.textContent =
-          "ERROR: " + (e && e.name ? e.name : "UnknownError") +
-          " / " + (e && e.message ? e.message : String(e));
+        log("CAMERA OK");
+        canvasBtn.disabled = false;
+      } catch (error) {
+        startBtn.disabled = false;
+        fail("CAMERA", error);
       }
     });
+
+    canvasBtn.addEventListener("click", () => {
+      try {
+        if (!overlayCanvas) {
+          overlayCanvas = document.createElement("canvas");
+          overlayCanvas.id = "overlayCanvas";
+          overlayCanvas.style.pointerEvents = "none";
+          document.body.appendChild(overlayCanvas);
+          overlayCtx = overlayCanvas.getContext("2d");
+          resizeOverlay();
+          window.addEventListener("resize", resizeOverlay);
+          requestAnimationFrame(drawOverlay);
+        }
+        log("CANVAS OK");
+        canvasBtn.disabled = true;
+        p5Btn.disabled = false;
+      } catch (error) {
+        fail("CANVAS", error);
+      }
+    });
+
+    p5Btn.addEventListener("click", async () => {
+      try {
+        await loadScript("https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js", "p5");
+        p5Instance = new window.p5((sketch) => {
+          sketch.setup = () => {
+            const c = sketch.createCanvas(window.innerWidth, window.innerHeight);
+            c.parent("p5Layer");
+            c.elt.style.pointerEvents = "none";
+            sketch.clear();
+          };
+          sketch.draw = () => {
+            sketch.clear();
+            sketch.noFill();
+            sketch.stroke(122, 255, 220, 95);
+            sketch.strokeWeight(2);
+            const r = 18 + Math.sin(sketch.frameCount * 0.05) * 5;
+            sketch.circle(34, window.innerHeight - 34, r);
+          };
+          sketch.windowResized = () => sketch.resizeCanvas(window.innerWidth, window.innerHeight);
+        });
+
+        log("P5 OK");
+        p5Btn.disabled = true;
+        mpBtn.disabled = false;
+      } catch (error) {
+        fail("P5", error);
+      }
+    });
+
+    mpBtn.addEventListener("click", async () => {
+      log("MEDIAPIPE LOADING");
+      try {
+        await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js", "mediapipe-hands");
+        if (!window.Hands) throw new Error("window.Hands is missing after script load");
+        log("MEDIAPIPE OK");
+        mpBtn.disabled = true;
+        trackBtn.disabled = false;
+      } catch (error) {
+        fail("MEDIAPIPE", error);
+      }
+    });
+
+    trackBtn.addEventListener("click", async () => {
+      try {
+        hands = new window.Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.55,
+          minTrackingConfidence: 0.55
+        });
+        hands.onResults((results) => {
+          detectedHands = results.multiHandLandmarks || [];
+        });
+        handTracking = true;
+        requestAnimationFrame(sendHandsFrame);
+        log("HAND TRACKING OK");
+        trackBtn.disabled = true;
+        clothBtn.disabled = false;
+      } catch (error) {
+        fail("HAND TRACKING", error);
+      }
+    });
+
+    clothBtn.addEventListener("click", () => {
+      try {
+        initCloth();
+        clothEnabled = true;
+        log("CLOTH OK");
+        clothBtn.disabled = true;
+      } catch (error) {
+        fail("CLOTH", error);
+      }
+    });
+
+    function loadScript(src, id) {
+      return new Promise((resolve, reject) => {
+        if (document.getElementById(id)) {
+          resolve();
+          return;
+        }
+        const script = document.createElement("script");
+        script.id = id;
+        script.src = src;
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.head.appendChild(script);
+      });
+    }
+
+    function resizeOverlay() {
+      if (!overlayCanvas) return;
+      overlayCanvas.width = Math.floor(window.innerWidth * window.devicePixelRatio);
+      overlayCanvas.height = Math.floor(window.innerHeight * window.devicePixelRatio);
+      overlayCanvas.style.width = `${window.innerWidth}px`;
+      overlayCanvas.style.height = `${window.innerHeight}px`;
+      overlayCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+    }
+
+    async function sendHandsFrame() {
+      if (!handTracking || !hands) return;
+      if (!handBusy && video.readyState >= 2) {
+        handBusy = true;
+        try {
+          await hands.send({ image: video });
+        } catch (error) {
+          handTracking = false;
+          fail("HAND TRACKING SEND", error);
+          return;
+        } finally {
+          handBusy = false;
+        }
+      }
+      requestAnimationFrame(sendHandsFrame);
+    }
+
+    function drawOverlay(now) {
+      if (!overlayCanvas || !overlayCtx) return;
+      fps = fps * 0.92 + (1000 / Math.max(1, now - lastFrame)) * 0.08;
+      lastFrame = now;
+
+      overlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      overlayCtx.fillStyle = "rgba(0,0,0,0.38)";
+      overlayCtx.fillRect(12, window.innerHeight - 58, 172, 42);
+      overlayCtx.fillStyle = "white";
+      overlayCtx.font = "13px ui-monospace, monospace";
+      overlayCtx.fillText(`overlay canvas OK`, 22, window.innerHeight - 36);
+      overlayCtx.fillText(`hands: ${detectedHands.length}`, 22, window.innerHeight - 20);
+
+      drawHandDots();
+      if (clothEnabled) updateAndDrawCloth();
+
+      renderStatus();
+      requestAnimationFrame(drawOverlay);
+    }
+
+    function drawHandDots() {
+      if (!detectedHands.length) return;
+      overlayCtx.save();
+      overlayCtx.fillStyle = "rgba(122,255,220,0.92)";
+      overlayCtx.strokeStyle = "rgba(255,240,120,0.95)";
+      overlayCtx.lineWidth = 2;
+
+      for (const hand of detectedHands) {
+        for (const lm of hand) {
+          const x = (1 - lm.x) * window.innerWidth;
+          const y = lm.y * window.innerHeight;
+          overlayCtx.beginPath();
+          overlayCtx.arc(x, y, 4, 0, Math.PI * 2);
+          overlayCtx.fill();
+        }
+        const thumb = hand[4];
+        const index = hand[8];
+        overlayCtx.beginPath();
+        overlayCtx.moveTo((1 - thumb.x) * window.innerWidth, thumb.y * window.innerHeight);
+        overlayCtx.lineTo((1 - index.x) * window.innerWidth, index.y * window.innerHeight);
+        overlayCtx.stroke();
+      }
+      overlayCtx.restore();
+    }
+
+    function initCloth() {
+      clothPoints = [];
+      clothSticks = [];
+      const cols = 18;
+      const rows = 14;
+      const w = window.innerWidth * 0.72;
+      const h = window.innerHeight * 0.36;
+      const startX = (window.innerWidth - w) / 2;
+      const startY = window.innerHeight * 0.32;
+      const sx = w / (cols - 1);
+      const sy = h / (rows - 1);
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const px = startX + x * sx;
+          const py = startY + y * sy;
+          clothPoints.push({ x: px, y: py, ox: px, oy: py, px, py, pinned: y === 0 });
+        }
+      }
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const id = y * cols + x;
+          if (x < cols - 1) clothSticks.push([id, id + 1, sx]);
+          if (y < rows - 1) clothSticks.push([id, id + cols, sy]);
+        }
+      }
+    }
+
+    function updateAndDrawCloth() {
+      for (const p of clothPoints) {
+        if (p.pinned) {
+          p.x = p.ox;
+          p.y = p.oy;
+          continue;
+        }
+        const vx = (p.x - p.px) * 0.94;
+        const vy = (p.y - p.py) * 0.94;
+        p.px = p.x;
+        p.py = p.y;
+        p.x += vx + (p.ox - p.x) * 0.002;
+        p.y += vy + 0.12 + (p.oy - p.y) * 0.002;
+      }
+
+      if (pointer) {
+        let nearest = null;
+        let best = 110 * 110;
+        for (const p of clothPoints) {
+          const d = (p.x - pointer.x) ** 2 + (p.y - pointer.y) ** 2;
+          if (d < best) {
+            best = d;
+            nearest = p;
+          }
+        }
+        if (nearest) {
+          nearest.x += (pointer.x - nearest.x) * 0.55;
+          nearest.y += (pointer.y - nearest.y) * 0.55;
+        }
+      }
+
+      for (let i = 0; i < 8; i++) {
+        for (const [aId, bId, len] of clothSticks) {
+          const a = clothPoints[aId];
+          const b = clothPoints[bId];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d = Math.hypot(dx, dy) || 1;
+          const diff = (d - len) / d * 0.42;
+          const ox = dx * diff * 0.5;
+          const oy = dy * diff * 0.5;
+          if (!a.pinned) { a.x += ox; a.y += oy; }
+          if (!b.pinned) { b.x -= ox; b.y -= oy; }
+        }
+      }
+
+      overlayCtx.save();
+      overlayCtx.strokeStyle = "rgba(255,255,255,0.48)";
+      overlayCtx.lineWidth = 1;
+      for (const [aId, bId] of clothSticks) {
+        const a = clothPoints[aId];
+        const b = clothPoints[bId];
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(a.x, a.y);
+        overlayCtx.lineTo(b.x, b.y);
+        overlayCtx.stroke();
+      }
+      overlayCtx.restore();
+    }
+
+    function setPointer(x, y) {
+      pointer = { x, y };
+    }
+
+    window.addEventListener("pointerdown", (event) => setPointer(event.clientX, event.clientY));
+    window.addEventListener("pointermove", (event) => {
+      if (pointer) setPointer(event.clientX, event.clientY);
+    });
+    window.addEventListener("pointerup", () => { pointer = null; });
+    window.addEventListener("pointercancel", () => { pointer = null; });
   </script>
 </body>
 </html>
